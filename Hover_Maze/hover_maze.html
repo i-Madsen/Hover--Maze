@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>Hover! Maze</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				margin: 0px;
+				background-color: #000000;
+				overflow: hidden;
+			}
+		</style>
+	</head>
+	<body>
+
+
+		<script src="js/three.js"></script>
+		<script src="http://threejs.org/examples/js/loaders/ColladaLoader.js"></script>
+		<script src="http://threejs.org/examples/js/loaders/GLTFLoader.js"></script>
+		<script src="js/easing.js"></script>
+		<script src="js/animutils.js"></script>
+		<script src="js/worldmap.js"></script>
+		<script src="js/particles.js"></script>
+		<script src="http://threejs.org/examples/js/controls/PointerLockControls.js"></script>
+		<script>
+			var camera, scene, renderer, controls;
+			var ui_camera, ui_scene;
+			var rearViewCamera, rearViewTexture;
+			var minimapCamera, minimapTexture;
+			var rotateRight = false;
+			var rotateLeft = false;
+			var rotateAngle = THREE.Math.degToRad(1.25);
+			var rotateLeftBy = rotateAngle;
+			var rotateRightBy = -rotateAngle;
+			var translateVector = new THREE.Vector3(0, 0, 0);
+			var translateForward = false;
+			var translateBackward = false;
+			var craftCollider;
+			var materials;
+			var timer = new THREE.Clock(false);
+			var canModifyVelocity = true;
+			
+			var headlight;
+			var goalPost1, goalPost2, goalCollider;
+			var timeUI, gameIsRunning = true;
+			var corridorSize = 450;
+			
+			var clock = new THREE.Clock();
+			var timeSinceStart;
+			var timeLimit = 5.0*60.0;
+			var score = 1000;
+			var hasWon = false;
+
+			var particleSystems = [];
+			
+			var box, movingWalls = [], movingBoxColliders = [];
+			var delta = 0.0;
+			var cameraTheta = 0.0;
+			var needToStart = true;
+			var hovercraft;
+			
+			var WallThickness = 25; 
+			var WallLength = 100;
+			
+			init();
+			animate();
+			
+			function init() {
+
+				camera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 1, 9000 );
+
+				camera.position.x = -475;
+				camera.position.y = 15;
+				camera.position.z = 500;
+				controls = new THREE.PointerLockControls(camera);
+				scene = new THREE.Scene();
+				var geometry = new THREE.BoxBufferGeometry( 1, 1, 1 );
+				
+				// UI scene and camera
+				ui_scene = new THREE.Scene();
+				ui_camera = new THREE.OrthographicCamera( window.innerWidth / - 2, window.innerWidth / 2, window.innerHeight / 2, window.innerHeight / - 2, 1, 1000 );
+				ui_scene.add(ui_camera);
+				
+				// Rear-view camera
+				rearViewCamera = new THREE.PerspectiveCamera( 70, window.innerWidth / window.innerHeight, 1, 3000 );
+				rearViewCamera.position.x = -475;
+				rearViewCamera.position.y = 15;
+				rearViewCamera.position.z = 500;
+				rearViewCamera.rotateY(THREE.Math.degToRad(180));
+				scene.add(rearViewCamera);
+
+				// Texture to store result
+				rearViewTexture = new THREE.WebGLRenderTarget( window.innerWidth, window.innerHeight, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter});
+					
+
+				// Minimap camera
+				// orthographic camera
+				minimapCamera = new THREE.OrthographicCamera(
+				window.innerWidth / -1.25,		// Left
+				window.innerWidth / 1.25,		// Right
+				window.innerHeight / 1.25,		// Top
+				window.innerHeight / -1.25,	// Bottom
+				-5000,            			// Near 
+				9950 );           			// Far 
+				minimapCamera.position.x = -475;
+				minimapCamera.position.y = 10000;
+				minimapCamera.position.z = 500;
+				minimapCamera.up = new THREE.Vector3(0,0,-1);
+				minimapCamera.lookAt( new THREE.Vector3(-475,-1,500) );
+				scene.add(minimapCamera);
+
+				// Texture to store result
+				minimapTexture = new THREE.WebGLRenderTarget( window.innerWidth, window.innerHeight, { minFilter: THREE.LinearFilter, magFilter: THREE.NearestFilter});		
+				
+				// Lights
+				var ui_light = new THREE.AmbientLight( 0x707070, 0.7 ); // soft white light
+				ui_scene.add(ui_light);
+
+				var light = new THREE.AmbientLight( 0x707070, 2.5 ); // soft white light
+				scene.add( light );
+
+				var directionalLight = new THREE.DirectionalLight( 0xffffff, 0.7);
+
+				camera.add( directionalLight );
+				scene.add( camera );
+
+				// Renderer
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( renderer.domElement );
+				
+				timeSinceStart = 0;
+				
+				// Make objects
+				makeWorld();
+				makeUIElements();
+				makeKeyframes();
+				
+				// Listeners
+				window.addEventListener( 'resize', onWindowResize, false );
+				window.addEventListener( 'keydown', onKeyDown, false );
+				window.addEventListener( 'keyup', onKeyUp, false );
+				
+			}
+		
+			function onWindowResize() {
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize( window.innerWidth, window.innerHeight );
+			}
+			
+			function animate() { requestAnimationFrame( animate );
+				
+				if (gameIsRunning)
+				{
+					var delta2 = clock.getDelta();
+					timeSinceStart += delta2;
+					moveBoxes(delta2);
+				
+					// Update the hovercraft collider location with the camera
+					craftCollider.center = camera.position;
+					checkCollision();
+				
+					// After hitting wall, turn away from it with reflection vector velocity and direction input disabled
+					if (timer.running) {
+						canModifyVelocity = false;
+						camera.rotateOnAxis(new THREE.Vector3(0,1,0), rotateAngle);
+						rearViewCamera.rotateOnAxis(new THREE.Vector3(0,1,0), rotateAngle);
+						minimapCamera.rotateOnWorldAxis(new THREE.Vector3(0,1,0), rotateAngle);
+						delta += 0.01;
+						if (delta >= 0.4)
+						{
+							timer.stop();
+							delta = 0.0;
+						}
+					} else {
+						// Direction input updates
+						canModifyVelocity = true;
+						if (rotateLeft) {
+							camera.rotateOnAxis(new THREE.Vector3(0,1,0), rotateLeftBy);
+							rearViewCamera.rotateOnAxis(new THREE.Vector3(0,1,0), rotateLeftBy);
+							minimapCamera.rotateOnWorldAxis(new THREE.Vector3(0,1,0), rotateLeftBy);
+						}
+						if (rotateRight) {
+							camera.rotateOnAxis(new THREE.Vector3(0,1,0), rotateRightBy);
+							rearViewCamera.rotateOnAxis(new THREE.Vector3(0,1,0), rotateRightBy);
+							minimapCamera.rotateOnWorldAxis(new THREE.Vector3(0,1,0), rotateRightBy);
+						}
+						
+						if (translateForward) {
+							increaseForwardVelocity();
+						}
+						if (translateBackward) {
+							decreaseForwardVelocity();
+						}
+					}
+					
+					// Movement updates
+					camera.position.x += translateVector.x;
+					rearViewCamera.position.x += translateVector.x;
+					minimapCamera.position.x += translateVector.x;
+					
+					camera.position.z += translateVector.z;
+					rearViewCamera.position.z += translateVector.z;
+					minimapCamera.position.z += translateVector.z;
+					
+					// Particle System updates
+					for (var i = 0; i < particleSystems.length; i++)
+					{
+						particleSystems[i].update(delta2);
+					}
+
+					// Check for time limit/update count down
+					if (timeSinceStart < timeLimit && hasWon == false)
+					{
+						timeUI.updateText(Math.round(timeLimit - timeSinceStart).toString());
+						scoreUI.updateText(Math.round(score).toString());
+					}
+					else if (timeSinceStart >= timeLimit && hasWon == false)
+					{
+						// Lose screen and stop game
+						timeUI.updateText("0");
+						var loseText = new UIElement(0.4,0.55,0.20,0.2,null,null,"You Lose.", new THREE.Color(0xff0000)) ;
+						ui_scene.add(loseText.drawGroup);
+						gameIsRunning = false;
+					}
+					
+					// Scene and UI updates
+					renderer.render( scene, camera );
+					renderer.autoClear = false;
+					renderer.render( ui_scene, ui_camera );
+					renderer.autoClear = false;
+					renderer.render( scene, rearViewCamera, rearViewTexture, true);
+					renderer.autoClear = false;
+					renderer.render( scene, minimapCamera, minimapTexture, true);
+					renderer.autoClear = true;
+					
+					// Diagetic Camera-facing UI
+					goalPost1.drawGroup.position.set(6*corridorSize, 50, -75, 1.0);
+					goalPost1.drawGroup.quaternion.copy(camera.quaternion);
+					goalPost2.drawGroup.position.set(6*corridorSize, 50, 75, 1.0);
+					goalPost2.drawGroup.quaternion.copy(camera.quaternion);
+				}
+			}
+
+			// Set the direction inputs' status active
+			function onKeyDown( event ) {
+
+					switch ( event.keyCode ) {
+						case 65: // a
+							rotateLeft = true;
+							break;
+						
+						case 87: // w
+							translateForward = true;
+							break;
+							
+						case 83: // s
+							translateBackward = true;
+							break;
+
+						case 68: // d
+							rotateRight = true;
+							break;
+
+					}
+
+			};
+			
+			// Set the direction inputs' status inactive
+			function onKeyUp( event ) {
+
+					switch ( event.keyCode ) {
+						case 65: // a
+							rotateLeft = false;
+							break;
+						
+						case 87: // w
+							translateForward = false;
+							break;
+							
+						case 83: // s
+							translateBackward = false;
+							break;
+							
+						case 68: // d
+							rotateRight = false;
+							break;
+
+					}
+			};
+			
+			// Partly directs foward velocity toward where the camera is looking
+			function increaseForwardVelocity () {
+			
+				if (canModifyVelocity) {
+					var tempDir = new THREE.Vector3();
+					camera.getWorldDirection(tempDir);
+					tempDir.multiply(new THREE.Vector3(8, 8, 8));
+					translateVector.lerp(tempDir, 0.1);
+					translateVector.clampScalar(-11, 11);
+				}
+			}
+			
+			// Partly directs forward velocity in reverse of where the camera is looking
+			function decreaseForwardVelocity () {
+			
+				if (canModifyVelocity) {
+					var tempDir = new THREE.Vector3();
+					camera.getWorldDirection(tempDir);
+					tempDir.multiply(new THREE.Vector3(-5, -5, -5));
+					translateVector.lerp(tempDir, 0.1);
+					translateVector.clampScalar(-6, 6);
+				}			
+			}
+			
+			// Check collision for the hovercraft with walls
+			function checkCollision()
+			{
+			
+				for (var i = 0; i < wallColliders.length; i++)
+				{
+
+					if (craftCollider.intersectsBox(wallColliders[i]))
+					{
+						var normal = new THREE.Vector3();
+						walls[i].getWorldDirection(normal);
+						translateVector.reflect(normal);
+						timer.start();
+						score -= 5;
+					}
+				}
+				
+				if (craftCollider.intersectsBox(goalCollider) && hasWon == false)
+				{
+					// Win screen
+					hasWon = true;
+					score += (timeLimit - timeSinceStart) * 3;
+					score = Math.round(score);
+					scoreUI.updateText(score.toString());
+					var winText = new UIElement(0.4,0.55,0.20,0.2,null,null,"You Win!", new THREE.Color(0x00ff00)) ;
+					ui_scene.add(winText.drawGroup);	
+					var scoreText = new UIElement(0.4,0.65,0.20,0.2,null,null,"Score: " + score.toString(), new THREE.Color(0x00ff00)) ;
+					ui_scene.add(scoreText.drawGroup);
+				}
+
+			}
+
+			// Create world objects
+			function makeWorld() {
+
+				materials = []; 
+				for (var i = 0 ; i < 20 ; i++ ){
+					materials.push( new THREE.MeshLambertMaterial( 
+						{
+							color : (Math.random() * 0xffffffff)
+						}));
+				}
+			
+				var path = "data/Maskonaive2/";
+				var format = '.jpg';
+				var urls = [
+					path + 'px' + format, path + 'nx' + format,
+					path + 'py' + format, path + 'ny' + format,
+					path + 'pz' + format, path + 'nz' + format
+				];
+				var reflectionCube = new THREE.CubeTextureLoader().load( urls );
+				reflectionCube.format = THREE.RGBFormat;
+
+				//This sets the background to cubmap
+				scene.background = reflectionCube;
+
+
+				//This creates a material that uses the cubemap that we assign to the box when it's created 
+				var cubeMaterial1 = new THREE.MeshLambertMaterial( { color: 0xffffff, envMap: reflectionCube } );
+
+			
+				var texturePlane = new THREE.TextureLoader().load( "data/stone_floor.jpg" );
+				texturePlane.wrapS = THREE.MirroredRepeatWrapping;
+				texturePlane.wrapT = THREE.RepeatWrapping;
+				texturePlane.repeat.set( 180, 180 );
+				texturePlane.anisotropy = 8;
+				texturePlane.minFilter = THREE.NearestMipMapNearestFilter;
+
+			
+				var materialPlane = new THREE.MeshLambertMaterial(
+					{
+						map: texturePlane
+					});
+				
+				var object = new THREE.Mesh( new THREE.PlaneBufferGeometry( 10000, 10000, 4, 4 ), materialPlane );
+			   	object.position.set( 2500, 0, 0 );
+				object.rotateX(THREE.Math.degToRad(-90));
+				scene.add( object );
+				
+				craftCollider = new THREE.Sphere(new THREE.Vector3(0,0,0), 15);
+				
+				
+				makeMaze();
+				
+				// Collider for the 'finish line'
+				goalCollider = new THREE.Box3(new THREE.Vector3(6*corridorSize, 0, -95), new THREE.Vector3(6*corridorSize + 10, 100, 95));
+				 
+				 
+				makeParticleFountain();
+				
+				
+				// Instantiate a loader for the hovercraft model
+				var loader = new THREE.GLTFLoader();
+				// Load a glTF resource
+				loader.load(
+					// resource URL
+					'data/hovercraft.gltf',
+					// called when the resource is loaded
+					function ( gltf ) {
+
+						scene.add( gltf.scene );
+
+						gltf.animations; // Array<THREE.AnimationClip>
+						gltf.scene; // THREE.Scene
+						gltf.scenes; // Array<THREE.Scene>
+						gltf.cameras; // Array<THREE.Camera>
+						gltf.asset; // Object
+						hovercraft = gltf.scene;
+						camera.add(hovercraft);
+						hovercraft.position.y = 1000;
+					},
+					// called while loading is progressing
+					function ( xhr ) {
+
+						console.log( ( xhr.loaded / xhr.total * 100 ) + '% loaded' );
+
+					},
+					// called when loading has errors
+					function ( error ) {
+
+						console.log( 'An error happened' );
+
+					}
+				);
+				
+
+
+			}	
+			
+			// Call the animation for the moving walls
+			function moveBoxes(deltaTime)
+			{
+				t = (timeSinceStart/35) % 1;	
+				for (var i = 0; i < movingWalls.length; i++) 
+				{
+					movingWalls[i].position.copy(evaluateKeyframes(i, t));
+					movingBoxColliders[i].setFromObject(movingWalls[i]);
+				}
+
+			}
+			
+			
+			
+			// PARTICLE SYSTEMS
+			
+			function makeParticleFountain() {
+			
+				var mazeCenter = new THREE.Vector3(450*7, 0, 0);
+			
+				var particleTexture = new THREE.TextureLoader().load('data/solar_particle.png');
+				var particleGeometry = new THREE.Geometry();
+				var vert = new THREE.Vector3(0,0,0)
+				particleGeometry.vertices.push(vert);
+				
+				// Right
+				var startVel = new THREE.Vector3(0.0, 40, 0.0);
+				var startPos = new THREE.Vector3(mazeCenter.x, 10, mazeCenter.z + 20);
+					
+				var particleSystemR1 = makeParticleStream(particleGeometry, startVel, startPos, particleTexture);
+				var particleSystemR2 = makeParticleStream(particleGeometry, startVel, startPos, particleTexture);
+				
+				particleSystemR1.setDelay(0);
+				particleSystemR1.setEmitLoop(120);
+				scene.add(particleSystemR1);
+				particleSystems.push(particleSystemR1);
+				
+				particleSystemR2.setDelay(58);
+				particleSystemR2.setEmitLoop(112);
+				scene.add(particleSystemR2);
+				particleSystems.push(particleSystemR2);
+				
+				// Left
+				startPos = new THREE.Vector3(mazeCenter.x, 10, mazeCenter.z - 20);
+				
+				var particleSystemL1 = makeParticleStream(particleGeometry, startVel, startPos, particleTexture);
+				var particleSystemL2 = makeParticleStream(particleGeometry, startVel, startPos, particleTexture);
+				
+				particleSystemL1.setDelay(0);
+				particleSystemL1.setEmitLoop(120);
+				scene.add(particleSystemL1);
+				particleSystems.push(particleSystemL1);
+				
+				particleSystemL2.setDelay(58);
+				particleSystemL2.setEmitLoop(112);
+				scene.add(particleSystemL2);
+				particleSystems.push(particleSystemL2);
+				
+			}
+			
+			function makeParticleStream(particleGeometry, startVel, startPos, particleTexture) {
+			
+				var pSys = new ParticleSystem();
+			
+				for (i = 0; i < 200; i++) {
+					var particleMaterial = new THREE.PointsMaterial({ color: 0xe39300, map : particleTexture});
+					particleMaterial.transparent = true;
+					particleMaterial.opacity = 0.5;
+					
+					var particle = new Particle(particleGeometry,particleMaterial,startVel,startPos,120, i/10);
+					particle.position.set(0,2,0);
+					
+					pSys.addParticle(particle);
+				}
+			
+				return pSys;
+			}
+			
+			
+			
+			// UI FUNCTIONS
+			
+			function makeTextTexture( text)
+			{
+				var canvasW = 256;
+				var canvasH = 256;
+				var hudCanvas = document.createElement('canvas');		
+				// Again, set dimensions to fit the screen.
+				
+				hudCanvas.width = canvasW;
+				hudCanvas.height = canvasH;
+
+				// Get 2D context and draw something supercool.
+				var hudBitmap = hudCanvas.getContext('2d');
+				hudBitmap.font = "Normal 80px Arial";
+				hudBitmap.textAlign = 'center';
+				hudBitmap.fillStyle = "rgba(245,245,245,0.75)";
+				hudBitmap.fillText(text, canvasW / 2, canvasH / 2);
+				var hudTexture = new THREE.Texture(hudCanvas) 
+				hudTexture.needsUpdate = true;
+				return hudTexture;
+			}
+
+
+			// 0,0 is bottm left of screen
+			// 1,1 is top right of screen
+
+			function getScreenX(normalizedX)
+			{
+				var scaledX =  normalizedX * window.innerWidth;
+				return window.innerWidth / -2  + scaledX;
+			}
+			
+			function getScreenY(normalizedY)
+			{
+				var newY = 1.0 - normalizedY;
+				
+				var scaledY =  newY * window.innerHeight;
+				return window.innerHeight / -2  + scaledY;
+
+			}
+			
+			function getFrustumX(normalizedX)
+			{
+				return normalizedX;
+			}
+			
+			function getFrustumY(normalizedY)
+			{
+				return normalizedY;
+
+			}
+	
+			function makeUIQuad(x,y,xsize,ysize,texture,texture_alpha)
+			{
+				// scale to match screen coordinates 
+				var xScreenSize = xsize * window.innerWidth ; 
+						
+				var yScreenSize = ysize * window.innerHeight ; 
+				
+				// move position to bottom right
+				var adjustedX = getScreenX(x) + xScreenSize /2;   
+				var adjustedY = getScreenY(y) + yScreenSize /2;   
+
+				var bak_mesh;
+				if (texture )
+				{
+					var bak_geometry = new THREE.PlaneBufferGeometry( xScreenSize, yScreenSize, 4,4 );
+					var bak_material = new THREE.MeshBasicMaterial( 
+						{ 
+							color: 0xffffff, 
+							map : texture, 
+							transparent:true,
+						});
+					if (texture_alpha)
+						bak_material.alphaMap = texture_alpha;
+					bak_mesh = new THREE.Mesh( bak_geometry, bak_material );
+					bak_mesh.position.set(adjustedX,adjustedY,-16,-100); 
+				}
+
+				var geometry = new THREE.PlaneBufferGeometry( xScreenSize, yScreenSize, 4,4 );
+				var material = new THREE.MeshBasicMaterial( 
+					{ 
+						color: 0xffffff, 
+						map : makeTextTexture(""), 
+						transparent:true 
+					});
+
+				var mesh = new THREE.Mesh( geometry, material );
+				mesh.position.set(adjustedX,adjustedY,-15,-100);
+				if (bak_mesh)
+					mesh.add(bak_mesh);
+				var group = new THREE.Group();
+				group.add(mesh);
+				if (bak_mesh)
+					group.add(bak_mesh);
+
+
+				return group;
+	
+			}
+	
+			function UIElement(x,y,xsize,ysize,texture,texture_alpha,text, textColor)
+			{
+
+				this.xSize = xsize;
+				this.ySize = ysize;
+				this.xPos = x;
+				this.yPos = y;
+				this.bak_mesh = null;
+				this.mesh = null;
+			
+				
+				this.updateSizePosition = function (nx,ny,nxsize,nysize){
+					this.xSize = nxsize;
+					this.ySize = nysize;
+					this.xPos = nx;
+					this.yPos = ny;
+					var xScreenSize = this.xSize * window.innerWidth ; 
+					var yScreenSize = this.ySize * window.innerHeight ; 
+					var adjustedX = getScreenX(x) + xScreenSize /2;   
+					var adjustedY = getScreenY(y) + yScreenSize /2;   
+					if(this.bak_mesh)
+						this.bak_mesh.position.set(adjustedX,adjustedY,-15,-100);
+					if(this.mesh)
+						this.mesh.position.set(adjustedX,adjustedY,-15,-100);
+				
+				}
+
+				this.updateText = function (newText)
+				{
+					this.uiTextObject.updateText(newText);
+
+				}
+
+				var xScrSize = this.xSize * window.innerWidth ; 
+				var yScrSize = this.ySize * window.innerHeight ; 
+
+				if (texture )
+				{
+
+					var bak_geometry = new THREE.PlaneBufferGeometry( xScrSize, yScrSize, 4,4 );
+					var bak_material = new THREE.MeshBasicMaterial( 
+						{ 
+							color: 0xffffff, 
+							map : texture, 
+							transparent:true,
+						});
+					if (texture_alpha)
+						bak_material.alphaMap = texture_alpha;
+					this.bak_mesh = new THREE.Mesh( bak_geometry, bak_material );
+				}
+
+				var geometry = new THREE.PlaneBufferGeometry( xScrSize, yScrSize, 4,4 );
+				this.uiTextObject = new UITextObject(text);
+				var material = new THREE.MeshBasicMaterial( 
+					{ 
+						color: textColor, 
+						map : this.uiTextObject.hudTexture, 
+						transparent:true 
+					});
+				this.mesh = new THREE.Mesh(geometry,material);
+
+				this.drawGroup = new THREE.Group();
+				this.drawGroup.add(this.mesh);
+				if (this.bak_mesh)
+					this.drawGroup.add(this.bak_mesh);
+
+				this.updateSizePosition(x,y,xsize,ysize,texture,texture_alpha);
+	
+			}
+			
+			function UIElementCamera(x,y,xsize,ysize,roty,texture,texture_alpha,text)
+			{
+
+				this.xSize = xsize;
+				this.ySize = ysize;
+				this.xPos = x;
+				this.yPos = y;
+				this.bak_mesh = null;
+				this.mesh = null;
+			
+				
+				this.updateSizePosition = function (nx,ny,nxsize,nysize,roty){
+					this.xSize = nxsize;
+					this.ySize = nysize;
+					this.xPos = nx;
+					this.yPos = ny;
+					var xScreenSize = this.xSize * window.innerWidth ; 
+					var yScreenSize = this.ySize * window.innerHeight ; 
+					var adjustedX = getFrustumX(nx) ;   
+					var adjustedY = getFrustumY(ny) ;   
+
+
+					var newPos = new THREE.Vector3( adjustedX, adjustedY, -1 )
+						newPos.unproject( camera );			
+				}
+
+				this.updateText = function (newText)
+				{
+					this.uiTextObject.updateText(newText);
+
+				}
+
+				var xScrSize = this.xSize * window.innerWidth ; 
+				var yScrSize = this.ySize * window.innerHeight ; 
+
+				if (texture )
+				{
+
+					var bak_geometry = new THREE.PlaneBufferGeometry( xsize, ysize, 4,4 );
+					var bak_material = new THREE.MeshBasicMaterial( 
+						{ 
+							color: 0xffffff, 
+							map : texture, 
+							transparent:true,
+						});
+					if (texture_alpha)
+						bak_material.alphaMap = texture_alpha;
+					this.bak_mesh = new THREE.Mesh( bak_geometry, bak_material );
+					this.bak_mesh.rotateY(THREE.Math.degToRad(roty));
+				}
+
+				var geometry = new THREE.PlaneBufferGeometry( xsize, ysize, 4,4 );
+				this.uiTextObject = new UITextObject(text);
+				var material = new THREE.MeshBasicMaterial( 
+					{ 
+						color: 0xffffff, 
+						map : this.uiTextObject.hudTexture, 
+						transparent:true 
+					});
+				this.mesh = new THREE.Mesh(geometry,material);
+				this.mesh.rotateY(THREE.Math.degToRad(roty));
+
+
+				this.drawGroup = new THREE.Group();
+				this.drawGroup.add(this.mesh);
+				if (this.bak_mesh)
+					this.drawGroup.add(this.bak_mesh);
+
+				this.updateSizePosition(x,y,xsize,ysize,roty);
+	
+			}
+			
+			function UITextObject( text)
+			{
+			
+				this.canvasW =  512;
+				this.canvasH =  256;
+				this.hudCanvas = document.createElement('canvas');		
+				this.hudCanvas.width = this.canvasW;
+				this.hudCanvas.height = this.canvasH;
+				this.hudBitmap = this.hudCanvas.getContext('2d');
+
+				this.hudBitmap.font = "Normal 80px Arial";
+				this.hudBitmap.textAlign = 'center';
+				this.hudBitmap.fillStyle = "rgba(245,245,245,0.75)";
+				this.hudBitmap.fillText(text, this.canvasW / 2, this.canvasH / 2);
+				this.hudTexture = new THREE.Texture(this.hudCanvas) 
+				this.hudTexture.needsUpdate = true;
+
+				this.updateText = function (newText) {
+					this.hudBitmap.clearRect(0,0,this.canvasW,this.canvasH);
+					this.hudBitmap.fillText(newText, this.canvasW / 2, this.canvasH / 2);
+					this.hudTexture.needsUpdate = true;
+				}
+
+			}
+
+			function makeUIElements()
+			{
+				var texture = new THREE.TextureLoader().load( 'data/Hover_HUD.png' );
+				var textureBlack = new THREE.TextureLoader().load( 'data/black.png' );
+
+				if (texture)
+					console.log("loaded texture");
+
+				//here we used normalized coordinates and scales
+				// 0,0 is bottm left of screen
+				// 1,1 is top right of screen
+				// A scale of 1,1 covers the screen
+				ui_scene.add(makeUIQuad(0.30, 0.175, 0.375, 0.2, textureBlack, null) );
+				ui_scene.add(makeUIQuad(0.30, 0.16, 0.375, 0.15, rearViewTexture.texture, null) );
+				ui_scene.add(makeUIQuad(0.30, 0.975, 0.375, 0.25, textureBlack, null) );
+				ui_scene.add(makeUIQuad(0.3755, 0.98, 0.25, 0.24, minimapTexture.texture, null) );
+				ui_scene.add(makeUIQuad(0.0,1.0,1,1,texture,null) );
+				timeUI = new UIElement(0.685,0.18,0.30,0.2,null,null,"xx") ;
+				ui_scene.add(timeUI.drawGroup);	
+				scoreUI = new UIElement(0.025,0.18,0.30,0.2,null,null,"xx");
+				ui_scene.add(scoreUI.drawGroup);
+	
+				// Diagetic camera-facing flag posts for the 'finish line'
+				var texture = new THREE.TextureLoader().load( 'data/flag.png' );
+				goalPost1 = new UIElementCamera(0.0, 0.0, 50.0, 125.0, 0.0, texture, null, "") ;
+				scene.add(goalPost1.drawGroup);	
+				goalPost2 = new UIElementCamera(0.0, 0.0, 50.0, 125.0, 0.0, texture, null, "") ;
+				scene.add(goalPost2.drawGroup);	
+
+			}
+
+		</script>
+
+	</body>
+</html>
