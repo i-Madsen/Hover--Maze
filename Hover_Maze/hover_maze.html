@@ -16,13 +16,13 @@
 
 
 		<script src="js/three.js"></script>
-		<script src="http://threejs.org/examples/js/loaders/ColladaLoader.js"></script>
-		<script src="http://threejs.org/examples/js/loaders/GLTFLoader.js"></script>
+		<script src="js/ColladaLoader.js"></script>
+		<script src="js/GLTFLoader.js"></script>
 		<script src="js/easing.js"></script>
 		<script src="js/animutils.js"></script>
 		<script src="js/worldmap.js"></script>
 		<script src="js/particles.js"></script>
-		<script src="http://threejs.org/examples/js/controls/PointerLockControls.js"></script>
+		<script src="js/PointerLockControls.js"></script>
 		<script>
 			var camera, scene, renderer, controls;
 			var ui_camera, ui_scene;
@@ -230,11 +230,19 @@
 					// Scene and UI updates
 					renderer.render( scene, camera );
 					renderer.autoClear = false;
+					renderer.setRenderTarget(null);
 					renderer.render( ui_scene, ui_camera );
 					renderer.autoClear = false;
-					renderer.render( scene, rearViewCamera, rearViewTexture, true);
+					renderer.setRenderTarget(null);
+					renderer.setRenderTarget(rearViewTexture);
+					renderer.clear();
+					renderer.render( scene, rearViewCamera);
+					renderer.setRenderTarget(null);
 					renderer.autoClear = false;
-					renderer.render( scene, minimapCamera, minimapTexture, true);
+					renderer.setRenderTarget(minimapTexture);
+					renderer.clear();
+					renderer.render( scene, minimapCamera);
+					renderer.setRenderTarget(null);
 					renderer.autoClear = true;
 					
 					// Diagetic Camera-facing UI
@@ -636,7 +644,10 @@
 				this.yPos = y;
 				this.bak_mesh = null;
 				this.mesh = null;
-			
+				if (textColor == null) 
+				{
+					textColor = new THREE.Color(0xffffff);
+				}
 				
 				this.updateSizePosition = function (nx,ny,nxsize,nysize){
 					this.xSize = nxsize;
